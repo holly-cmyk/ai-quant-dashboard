@@ -161,31 +161,35 @@ def build_today_card(sn, color, prices, total_val):
     return h
 
 def build_daily_log_row(date_str, port_val, prev_val, cash, n_pos):
-    """Build one <tr> row for the Daily Performance Log."""
+    """Build one <tr> row for the Daily Performance Log.
+    NOTE: Output is inserted into a JS string delimited by ", so all " must be escaped as \\".
+    """
     pnl = port_val - prev_val
     ret = (pnl / prev_val * 100) if prev_val else 0
     a, c = _arrow(pnl)
-    return (f'<tr>\n      <td style="color:#aaa;font-size:11px">{date_str}</td>\n'
-            f'      <td class="num">${port_val:,.2f}</td>\n'
-            f'      <td class="num" style="color:{c}">{pnl:+,.2f}</td>\n'
-            f'      <td class="num" style="color:{c}">{ret:+.2f}%</td>\n'
-            f'      <td class="num">${cash:.2f}</td>\n'
-            f'      <td class="num">{n_pos}</td></tr>')
+    return (f'<tr>\\n      <td style=\\"color:#aaa;font-size:11px\\">{date_str}</td>\\n'
+            f'      <td class=\\"num\\">${port_val:,.2f}</td>\\n'
+            f'      <td class=\\"num\\" style=\\"color:{c}\\">{pnl:+,.2f}</td>\\n'
+            f'      <td class=\\"num\\" style=\\"color:{c}\\">{ret:+.2f}%</td>\\n'
+            f'      <td class=\\"num\\">${cash:.2f}</td>\\n'
+            f'      <td class=\\"num\\">{n_pos}</td></tr>')
 
 def build_holdings_row(ticker, shares, avg_cost, cur_price, value, weight_pct):
-    """Build one <tr> for the Holdings table."""
+    """Build one <tr> for the Holdings table.
+    NOTE: Output is inserted into a JS string delimited by ", so all " must be escaped as \\".
+    """
     info = TICKER_INFO.get(ticker, {"name":ticker,"sector":"?","sc":"#888"})
     unreal_pnl = (cur_price - avg_cost) * shares
     a,c = _arrow(unreal_pnl)
-    return (f'<tr>\n      <td><b style="color:#ffd166">{ticker}</b></td>\n'
-            f'      <td style="color:#ccc;font-size:11px">{info["name"]}</td>\n'
-            f'      <td><span class="ir-sec" style="background:{info["sc"]}22;color:{info["sc"]}">{info["sector"]}</span></td>\n'
-            f'      <td class="num">{shares:.1f}</td>\n'
-            f'      <td class="num">${avg_cost:,.2f}</td>\n'
-            f'      <td class="num">${cur_price:,.2f}</td>\n'
-            f'      <td class="num" style="color:{c}">{a} ${abs(unreal_pnl):,.2f}</td>\n'
-            f'      <td class="num">${value:,.2f}</td>\n'
-            f'      <td class="num">{weight_pct:.1f}%</td></tr>')
+    return (f'<tr>\\n      <td><b style=\\"color:#ffd166\\">{ticker}</b></td>\\n'
+            f'      <td style=\\"color:#ccc;font-size:11px\\">{info["name"]}</td>\\n'
+            f'      <td><span class=\\"ir-sec\\" style=\\"background:{info["sc"]}22;color:{info["sc"]}\\">{info["sector"]}</span></td>\\n'
+            f'      <td class=\\"num\\">{shares:.1f}</td>\\n'
+            f'      <td class=\\"num\\">${avg_cost:,.2f}</td>\\n'
+            f'      <td class=\\"num\\">${cur_price:,.2f}</td>\\n'
+            f'      <td class=\\"num\\" style=\\"color:{c}\\">{a} ${abs(unreal_pnl):,.2f}</td>\\n'
+            f'      <td class=\\"num\\">${value:,.2f}</td>\\n'
+            f'      <td class=\\"num\\">{weight_pct:.1f}%</td></tr>')
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # MAIN PATCHER
