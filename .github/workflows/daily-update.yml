@@ -1,0 +1,45 @@
+# AI Portfolio Dashboard — Daily Auto-Update
+# Runs every weekday at 10:30 PM UTC (6:30 PM ET / after US market close)
+# Also runs on manual trigger
+
+name: Daily Price Update
+
+on:
+  schedule:
+    # 22:30 UTC = 6:30 PM Eastern (after market close at 4 PM)
+    # Runs Mon-Fri only (relevant trading days)
+    - cron: '30 22 * * 1-5'
+  workflow_dispatch:  # Allow manual trigger from GitHub UI
+
+permissions:
+  contents: write  # Needed to push updated files
+
+jobs:
+  update-prices:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install yfinance pandas numpy
+
+      - name: Run price updater
+        run: python update_prices.py
+
+      - name: Commit and push changes
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add -A
+          # Only commit if there are changes
+          git diff --staged --quiet || {
+            DATE=$(date +%Y-%m-%d)
+            git commit -m "Auto-update prices for $DATE"
+            git push
+          }
