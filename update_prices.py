@@ -221,7 +221,7 @@ def patch_html(date_str, prices):
     updated.append("2. Backtest trading days")
 
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    # 3. TODAY TAB
+    # 3. TODAY TAB — in-place update (preserve original strategy holdings & weights)
     spy = prices.get("SPY",{"price":0,"change":0})
     sa,sc = _arrow(spy["change"])
 
@@ -229,20 +229,44 @@ def patch_html(date_str, prices):
     ls_match = re.search(r'LIVE_SUMMARY\s*=\s*(\{.*?\});', html, re.DOTALL)
     live_summary = json.loads(ls_match.group(1)) if ls_match else {}
 
-    strats_today = {"Equal Weight":"#636EFA","Momentum":"#EF553B",
-        "MVO":"#00CC96","Sector Rotation":"#AB63FA","Golden Cross":"#FFA15A"}
-    new_today = f'''id="tab-today" class="section">
-  <div class="info-row">
-    <div class="info-chip">As of <span>{date_str}</span></div>
-    <div class="info-chip">S&P 500 today <span id="spy-today" style="color:{sc}">{sa} {abs(spy["change"]):.2f}% (${spy["price"]:,.2f})</span></div>
-  </div>\n'''
-    for sn, clr in strats_today.items():
-        cap = live_summary.get(sn,{}).get("final_val",100000)
-        new_today += build_today_card(sn, clr, prices, cap)
-    new_today += "\n</div>"
-    m = re.search(r'id="tab-today" class="section">.*?</div>\s*\n\s*<!-- ── TRANSACTION', html, re.DOTALL)
-    if m: html = html[:m.start()] + new_today + "\n\n<!-- ── TRANSACTION" + html[m.end():]
-    updated.append("3. Today tab (5 strategies × 33 tickers)")
+    # 3a. Update "As of" date
+    html = re.sub(r'(As of\s*<span>)\d{4}-\d{2}-\d{2}(</span>)',
+                  rf'\g<1>{date_str}\2', html)
+
+    # 3b. S&P 500 today chip — dynamically loaded by JS, no HTML patch needed
+
+    # 3c. Update each ticker's Price and Today% columns in the Today tab
+    # Find the Today tab section
+    today_start = html.find('id="tab-today"')
+    today_end = html.find('<!-- ── TRANSACTION', today_start) if today_start >= 0 else -1
+    if today_start >= 0 and today_end >= 0:
+        today_section = html[today_start:today_end]
+        for t in list(TICKER_INFO.keys()):
+            if t not in prices: continue
+            p = prices[t]
+            ta, tc = _arrow(p["change"])
+            # Update price: find >$PRICE< pattern after ticker name
+            # Pattern: >TICKER</b>...</td><td class="num">$PRICE</td><td class="num"...>CHANGE</td>
+            # We update price and change cells for this ticker
+            pat = re.compile(
+                rf'(>{re.escape(t)}</b></td>.*?'         # ticker
+                rf'<td class="num">\$)[\d,]+\.\d{{2}}'   # price cell
+                rf'(</td>\s*<td class="num"[^>]*>)[^<]*' # change cell
+                rf'(</td>)',
+                re.DOTALL)
+            def _replace_price(m, price=p, arrow=ta, color=tc):
+                return f'{m.group(1)}{price["price"]:,.2f}{m.group(2)}{arrow} {abs(price["change"]):.2f}%{m.group(3)}'
+            today_section, n_subs = pat.subn(_replace_price, today_section)
+        # 3d. Update strategy header values and today%
+        for sn in ["Equal Weight", "Momentum", "MVO", "Sector Rotation", "Golden Cross"]:
+            sm = live_summary.get(sn, {})
+            cap = sm.get("final_val", 100000)
+            # Update "Value: <b>$XXX</b>"
+            today_section = re.sub(
+                rf'({re.escape(sn)}.*?Value:\s*<b>\$)[\d,]+(</b>)',
+                rf'\g<1>{cap:,.0f}\2', today_section, count=1, flags=re.DOTALL)
+        html = html[:today_start] + today_section + html[today_end:]
+    updated.append("3. Today tab (in-place price/change update, weights preserved)")
 
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     # 4. LIVE HEADER TRADING DAYS
@@ -443,6 +467,78 @@ def patch_html(date_str, prices):
             except Exception as e:
                 print(f"  [warn] STOCK_D {ticker}: {e}")
     updated.append("10. STOCK_D (33 stock price charts)")
+
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    # 10b. OVERVIEW CHART — append today's data to each cumulative return trace
+    overview_strats = {
+        "Equal Weight": STRAT_BETA.get("Equal Weight", 1.0),
+        "Momentum": STRAT_BETA.get("Momentum", 1.3),
+        "MVO": STRAT_BETA.get("MVO", 0.9),
+        "Sector Rotation": STRAT_BETA.get("Sector Rotation", 1.1),
+        "Golden Cross": STRAT_BETA.get("Golden Cross", 1.0),
+    }
+    overview_anchor = html.find("Plotly.newPlot('plt-overview'")
+    if overview_anchor >= 0:
+        ov_updated = 0
+        # Process each strategy trace + S&P 500
+        all_ov_traces = list(overview_strats.keys()) + ["S&P 500 (B&H)"]
+        for trace_name in all_ov_traces:
+            # Find this trace's "name":"TraceNameHere" in the overview region
+            name_pat = f'"name":"{trace_name}"'
+            name_idx = html.find(name_pat, overview_anchor)
+            if name_idx < 0:
+                name_pat = f'"name": "{trace_name}"'
+                name_idx = html.find(name_pat, overview_anchor)
+            if name_idx < 0:
+                print(f"  [warn] Overview trace '{trace_name}' not found")
+                continue
+            # Find the x array for this trace (search backward from name for "x":[)
+            trace_start = html.rfind('{', overview_anchor, name_idx)
+            x_idx = html.find('"x":', trace_start, name_idx + 2000)
+            if x_idx < 0: continue
+            x_arr_start = html.find('[', x_idx, x_idx + 5)
+            x_arr_end = html.find(']', x_arr_start)
+            x_arr = json.loads(html[x_arr_start:x_arr_end+1])
+            if date_ts in x_arr:
+                continue  # Already updated
+            x_arr.append(date_ts)
+            new_x = json.dumps(x_arr, separators=(',',':'))
+            html = html[:x_arr_start] + new_x + html[x_arr_end+1:]
+            # Adjust positions after x insertion
+            shift = len(new_x) - (x_arr_end + 1 - x_arr_start)
+            # Find y bdata for this trace (after updated x)
+            y_search_start = x_arr_start + len(new_x)
+            y_idx = html.find('"y":', y_search_start, y_search_start + 500)
+            if y_idx < 0: continue
+            bdata_key = '"bdata":"'
+            bd_idx = html.find(bdata_key, y_idx, y_idx + 200)
+            if bd_idx < 0: continue
+            bd_val_start = bd_idx + len(bdata_key)
+            bd_val_end = html.find('"', bd_val_start)
+            bdata_str = html[bd_val_start:bd_val_end]
+            bdata_str = bdata_str.replace('\\u002f', '/').replace('\\u002b', '+')
+            try:
+                raw_bytes = base64.b64decode(bdata_str)
+                n_vals = len(raw_bytes) // 8
+                vals = list(struct.unpack(f'<{n_vals}d', raw_bytes))
+                last_val = vals[-1]
+                # Compute new cumulative return value
+                if trace_name == "S&P 500 (B&H)":
+                    new_val = last_val * (1 + spy_daily_ret) + spy_daily_ret * 100
+                else:
+                    beta = overview_strats.get(trace_name, 1.0)
+                    day_ret = ew_daily_ret * beta
+                    new_val = last_val + day_ret * (100 + last_val)  # compound on cumulative
+                vals.append(round(new_val, 6))
+                new_bytes = struct.pack(f'<{len(vals)}d', *vals)
+                new_bdata = base64.b64encode(new_bytes).decode('ascii')
+                html = html[:bd_val_start] + new_bdata + html[bd_val_end:]
+                ov_updated += 1
+            except Exception as e:
+                print(f"  [warn] Overview {trace_name} bdata: {e}")
+        updated.append(f"10b. Overview chart ({ov_updated} traces updated)")
+    else:
+        updated.append("10b. Overview chart (not found)")
 
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     # 11. MET variable — update FinalValue and TotalReturn
