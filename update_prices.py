@@ -108,6 +108,7 @@ STRAT_BETA = {"Industry Rotation":1.05,"Equal Weight":1.0,"Momentum":1.3,
 # DATA FETCHING
 # ═══════════════════════════════════════════════════════════════════════════════
 def fetch_prices():
+    """Fetch latest prices from Yahoo Finance. Returns (date_str, prices_dict)."""
     tickers = list(TICKER_INFO.keys())
     print(f"[fetch] Downloading {len(tickers)} tickers...")
     raw = yf.download(tickers, period="5d", auto_adjust=True, progress=False, threads=True)["Close"]
@@ -123,6 +124,44 @@ def fetch_prices():
             prices[t] = {"price": round(p,2), "prev": round(pp,2),
                          "change": round((p-pp)/pp*100,2) if pp else 0}
     return str(d_now.date()), prices
+
+def prices_from_csv(csv_path, date_str):
+    """Build a prices dict for a specific date from the CSV file."""
+    df = pd.read_csv(csv_path, index_col=0, parse_dates=True)
+    ts = pd.Timestamp(date_str)
+    if ts not in df.index:
+        return None
+    # Find previous trading day
+    idx_pos = df.index.get_loc(ts)
+    if idx_pos == 0:
+        return None
+    prev_ts = df.index[idx_pos - 1]
+    prices = {}
+    for t in TICKER_INFO:
+        if t in df.columns and pd.notna(df.at[ts, t]):
+            p = float(df.at[ts, t])
+            pp = float(df.at[prev_ts, t]) if pd.notna(df.at[prev_ts, t]) else p
+            prices[t] = {"price": round(p, 2), "prev": round(pp, 2),
+                         "change": round((p - pp) / pp * 100, 2) if pp else 0}
+    return prices if prices else None
+
+def find_gap_dates(csv_path, html_path):
+    """Find trading dates in CSV that are missing from LIVE_DATES in the HTML."""
+    df = pd.read_csv(csv_path, index_col=0, parse_dates=True)
+    with open(html_path, "r", encoding="utf-8") as f:
+        html = f.read()
+    m = re.search(r'const LIVE_DATES\s*=\s*(\[.*?\]);', html)
+    if not m:
+        return []
+    live_dates = set(json.loads(m.group(1)))
+    live_start = pd.Timestamp("2026-02-01")
+    csv_dates = sorted([d for d in df.index if d >= live_start])
+    gaps = []
+    for d in csv_dates:
+        ds = str(d.date())
+        if ds not in live_dates:
+            gaps.append(ds)
+    return gaps
 
 def update_csv(date_str, prices):
     if not CSV_FILE.exists(): return
@@ -582,7 +621,6 @@ def patch_html(date_str, prices):
         print(f"  ✓ {u}")
 
     print(f"\n[note] NOT updated (requires full backtest re-run):")
-    print(f"  · Overview cumulative return chart (inline renderOverview)")
     print(f"  · Drawdown, Rolling Sharpe, Bull/Bear, Rotation, Costs charts")
     print(f"  · ALL_SIGS signal overlays")
     print(f"  · Metrics tab HTML tables (hardcoded)")
@@ -592,14 +630,36 @@ def patch_html(date_str, prices):
 # ═══════════════════════════════════════════════════════════════════════════════
 def main():
     print(f"\n{'='*60}")
-    print(f"  AI Portfolio Dashboard — Comprehensive Updater v3")
+    print(f"  AI Portfolio Dashboard — Comprehensive Updater v4")
     print(f"  {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     print(f"{'='*60}\n")
     if not HTML_FILE.exists():
         print(f"ERROR: {HTML_FILE} not found"); sys.exit(1)
+
+    # Step 1: Fetch today's prices and update CSV
     date_str, prices = fetch_prices()
     print(f"[main] {len(prices)} tickers for {date_str}\n")
     if CSV_FILE.exists(): update_csv(date_str, prices)
+
+    # Step 2: Backfill any gap dates between last LIVE_DATE and today
+    if CSV_FILE.exists():
+        gaps = find_gap_dates(CSV_FILE, HTML_FILE)
+        # Exclude today (we'll handle it with live prices below)
+        gaps = [d for d in gaps if d != date_str]
+        if gaps:
+            print(f"[backfill] Found {len(gaps)} missing trading days: {gaps}")
+            for gap_date in sorted(gaps):
+                gap_prices = prices_from_csv(CSV_FILE, gap_date)
+                if gap_prices:
+                    print(f"\n[backfill] Patching {gap_date} ({len(gap_prices)} tickers)...")
+                    patch_html(gap_date, gap_prices)
+                else:
+                    print(f"[backfill] SKIP {gap_date} — no CSV data")
+        else:
+            print("[backfill] No gap dates to fill")
+
+    # Step 3: Patch today with live prices
+    print(f"\n[main] Patching today: {date_str}")
     patch_html(date_str, prices)
     print(f"\n{'='*60}")
     print(f"  ✓ Dashboard updated to {date_str}")
